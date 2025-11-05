@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: tg-bot-webhook
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 1 -b 0.0.0.0:$PORT app:app
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_SECRET
+        sync: false
+      - key: SETUP_TOKEN
+        sync: false
