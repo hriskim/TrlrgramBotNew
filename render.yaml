@@ -3,8 +3,8 @@ services:
     name: tg-bot-webhook
     runtime: python
     plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn -w 1 -b 0.0.0.0:$PORT app:app
+    buildCommand: pip install -r requirements.txt && pip install gunicorn
+    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
     envVars:
       - key: BOT_TOKEN
         sync: false
