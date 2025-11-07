@@ -1,60 +1,105 @@
+"""
+🚀 app.py — ГЛАВНЫЙ серверный файл (FastAPI + Webhook для Telegram)
+
+ЗАЧЕМ НУЖЕН:
+• 🧠 Это веб-сервис, который поднимает Render. Он слушает HTTP-порт и принимает обновления от Telegram.
+• 🌐 Здесь создаётся endpoint /webhook/<секрет>, на который Telegram присылает апдейты.
+• 🔗 На старте мы автоматически ставим вебхук на публичный URL (Render даёт RENDER_EXTERNAL_URL).
+• 🧲 Все апдейты перебрасываются в PTB-приложение с вашими хендлерами (см. user_bot.py).
+
+ЧТО НАСТРОИТЬ:
+• 🔐 Переменные окружения: BOT_TOKEN (из @BotFather) и WEBHOOK_SECRET (любой ваш секрет).
+• 🖥️ Локально можно задать PUBLIC_URL (например http://localhost:8000) для теста вебхука.
+
+ЧЕГО НЕ ДЕЛАТЬ:
+• ⛔ Не используйте long-polling (run_polling) на Render Free — тут нужен Webhook.
+• ⛔ Не слушайте произвольный порт — Render ждёт порт из переменной $PORT.
+
+КАК ПРОВЕРИТЬ:
+1) ✅ GET /health → {"ok": true}
+2) 🔍 https://api.telegram.org/bot<ТОКЕН>/getWebhookInfo → в url ваш Render-домен + /webhook/<секрет>
+3) 💬 Напишите боту в Telegram → он отвечает.
+"""
+
 import os
-import requests
-import telebot
-from flask import Flask, request, abort
 import logging
+from fastapi import FastAPI, Request
+from telegram import Update
+from telegram.ext import Application
 
+# 🪵 Включим понятные логи
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("ptb-webhook")
 
-TOKEN = os.environ["BOT_TOKEN"]
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")  
-SETUP_TOKEN = os.getenv("SETUP_TOKEN", "")        
+# 🔐 Переменные окружения (ЗАДАЁМ В UI Render → Environment)
+BOT_TOKEN = os.environ["BOT_TOKEN"]                   # токен бота из @BotFather
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "hook")  # ваш секрет для пути вебхука
+# 🌐 Публичный URL: Render задаёт RENDER_EXTERNAL_URL автоматически.
+# Локально можно задать PUBLIC_URL для теста.
+PUBLIC_URL = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("PUBLIC_URL")
 
-bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
+# 🤖 Создаём PTB-приложение (ядро бота)
+application = Application.builder().token(BOT_TOKEN).build()
 
-@bot.message_handler(commands=['start'])
-def start(message):
-    logger.info(f"START from: {message.from_user.first_name}")
-    bot.reply_to(message, "✅ Бот работает на Render!")
+# 🧩 Подтягиваем ваши хендлеры
+from user_bot import register  # noqa: E402
+register(application)
 
-@bot.message_handler(func=lambda message: True)
-def echo_all(message):
-    logger.info(f"Message: {message.text}")
-    bot.reply_to(message, f"🔁 Эхо: {message.text}")
+# ⚙️ Поднимаем веб-сервер
+app = FastAPI()
 
-@app.post(f"/webhook/{TOKEN}")
-def tg_webhook():
-    if WEBHOOK_SECRET and request.headers.get("X-Telegram-Bot-Api-Secret-Token") != WEBHOOK_SECRET:
-        abort(403)
-    
-    if request.get_data():
-        json_data = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_data)
-        bot.process_new_updates([update])
-    
-    return "ok", 200
+@app.on_event("startup")
+async def on_startup():
+    """
+    🏁 Старт сервиса:
+    1) Проверяем публичный URL
+    2) Ставим вебхук на <PUBLIC_URL>/webhook/<SECRET>
+    3) Инициализируем и запускаем PTB
+    """
+    assert PUBLIC_URL, "❌ Нет PUBLIC_URL / RENDER_EXTERNAL_URL — куда ставить вебхук?"
+    url = f"{PUBLIC_URL}/webhook/{WEBHOOK_SECRET}"
 
-@app.get("/")
-def health():
-    return "✅ Бот активен", 200
+    # 🧷 Поставим вебхук. drop_pending_updates=True — Telegram сбросит «висящие» апдейты
+    await application.bot.set_webhook(url, drop_pending_updates=True)
 
-@app.get("/init")
-def init():
-    if SETUP_TOKEN and request.args.get("token") != SETUP_TOKEN:
-        abort(403)
-    
-    proto = request.headers.get("X-Forwarded-Proto", "https")
-    host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
-    url = f"{proto}://{host}/webhook/{TOKEN}"
-    
-    params = {"url": url}
-    if WEBHOOK_SECRET:
-        params["secret_token"] = WEBHOOK_SECRET
-    
-    r = requests.post(f"https://api.telegram.org/bot{TOKEN}/setWebhook", json=params)
-    return r.json(), 200
+    # ▶️ Запускаем PTB
+    await application.initialize()
+    await application.start()
+
+    logger.info("✅ Webhook set to %s", url)
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    """🧹 Аккуратно останавливаем PTB при выключении сервиса."""
+    await application.stop()
+    await application.shutdown()
+
+
+@app.get("/health")
+async def health():
+    """🩺 Простой health-check, удобен для мониторинга и проверки Render."""
+    return {"ok": True}
+
+
+@app.post("/webhook/{secret}")
+async def webhook(secret: str, request: Request):
+    """
+    📩 Главная точка приёма апдейтов от Telegram:
+    • сверяем секрет,
+    • превращаем JSON → Update,
+    • отправляем в PTB,
+    • отдаём быстрый 200 OK (ВАЖНО — иначе Telegram будет ретраить).
+    """
+    if secret != WEBHOOK_SECRET:
+        return {"ok": False}
+
+    data = await request.json()
+    update = Update.de_json(data, application.bot)
+
+    await application.process_update(update)
+    return {"ok": True}
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+
