@@ -1,3 +1,4 @@
-Flask==2.3.3
-pyTelegramBotAPI==4.22.1
-requests==2.32.3
+# 📦 requirements.txt — зависимости проекта
+fastapi
+uvicorn[standard]
+python-telegram-bot==20.7
