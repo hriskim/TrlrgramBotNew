@@ -1,10 +1,19 @@
-# Telegram Bot для Render.com
+# 🤖 Telegram Bot (PTB v20 + FastAPI, Webhook) для Render (free)
 
-Простой Telegram бот, развернутый на Render.com.
+Этот шаблон переводит бота с ноутбука (polling) в прод-сервис на **Webhook**.
+Работает на **Render Free** (усыпляет при простое — ок, Telegram сам ретраит).
 
-## Локальная разработка
+## 📁 Содержимое
+- `app.py` — веб-сервер (FastAPI), ставит вебхук на публичный URL, принимает `/webhook/<секрет>`, передаёт апдейты в PTB.
+- `user_bot.py` — ваши хендлеры: команды, кнопки, демо-фичи.
+- `requirements.txt` — зависимости.
+- `render.yaml` — конфигурация Render Web Service.
+- `.env.sample` — пример окружения.
 
-1. Клонируйте репозиторий:
+## 🧪 Локальный запуск
 ```bash
-git clone <your-repo-url>
-cd telegram-bot
+pip install -r requirements.txt
+export BOT_TOKEN=xxx:from_BotFather
+export WEBHOOK_SECRET=hooksecret
+export PUBLIC_URL=http://localhost:8000
+uvicorn app:app --host 0.0.0.0 --port 8000
