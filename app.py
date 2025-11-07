@@ -9,11 +9,11 @@
 
 ЧТО НАСТРОИТЬ:
 • 🔐 Переменные окружения: BOT_TOKEN (из @BotFather) и WEBHOOK_SECRET (любой ваш секрет).
-• 🧾 Опционально: SERVICE_FINGERPRINT (строка-«отпечаток» сервиса для /health).
+• 🧾 Опционально: SERVICE_FINGERPRINT (строка-«отпечаток» для /health).
 • 🖥️ Локально можно задать PUBLIC_URL (например http://localhost:8000) для теста вебхука.
 
 ЧЕГО НЕ ДЕЛАТЬ:
-• ⛔ Не используйте long-polling (run_polling) на Render Free — тут нужен Webhook.
+• ⛔ Не используйте long-polling (run_polling) на Render Free — нужен Webhook.
 • ⛔ Не слушайте произвольный порт — Render ждёт порт из переменной $PORT.
 
 КАК ПРОВЕРИТЬ:
@@ -39,10 +39,10 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "hook")  # ваш секрет дл
 # 🌐 Публичный URL: Render задаёт RENDER_EXTERNAL_URL. Локально можно PUBLIC_URL.
 PUBLIC_URL = os.getenv("RENDER_EXTERNAL_URL") or os.getenv("PUBLIC_URL")
 
-# 🏷️ «Отпечаток» сервиса/репозитория для /health (удобно, чтобы убедиться, что деплой тот)
+# 🏷️ «Отпечаток» сервиса/репозитория для /health
 SERVICE_FINGERPRINT = os.getenv("SERVICE_FINGERPRINT", "unknown")
 
-# 📄 Опционально читаем отпечаток из файла репозитория (если положите FINGERPRINT.txt в корень)
+# 📄 Опционально читаем «отпечаток» из файла репозитория (если положите FINGERPRINT.txt в корень)
 try:
     with open("FINGERPRINT.txt", "r", encoding="utf-8") as f:
         REPO_FINGERPRINT = f.read().strip()
@@ -59,13 +59,20 @@ from user_bot import register  # noqa: E402
 app = FastAPI()
 
 
+@app.get("/")
+async def root():
+    # Чтобы HEAD/GET на корень не отдавал 500, а сразу подсказку
+    return {"ok": True, "hint": "use /health or /debug/webhook-info"}
+
+
 @app.on_event("startup")
 async def on_startup():
     """
     🏁 Старт сервиса:
     1) Проверяем, что есть PUBLIC_URL (куда ставить вебхук)
     2) Читаем BOT_TOKEN из окружения (на этапе старта, а не при импорте)
-    3) Создаём PTB-приложение, регистрируем хендлеры, ставим вебхук, запускаем PTB
+    3) Создаём PTB-приложение (без Updater!), регистрируем хендлеры,
+       ставим вебхук, запускаем PTB
     """
     global application
 
@@ -76,8 +83,8 @@ async def on_startup():
     if not bot_token:
         raise RuntimeError("❌ Нет BOT_TOKEN в переменных окружения (Render → Settings → Environment).")
 
-    # Создаём PTB-приложение только теперь, когда токен точно есть
-    application = Application.builder().token(bot_token).build()
+    # ВАЖНО: Updater нам не нужен для webhook. Выключаем его, чтобы обойти баг PTB 20.x + Python 3.13.
+    application = Application.builder().token(bot_token).updater(None).build()
     register(application)
 
     # Ставим вебхук
@@ -102,14 +109,31 @@ async def on_shutdown():
 @app.get("/health")
 async def health():
     """
-    🩺 Простой health-check.
-    Возвращаем «отпечатки», чтобы легко убедиться, что деплой смотрит на нужный репо/ветку.
-    SERVICE_FINGERPRINT — из ENV, REPO_FINGERPRINT — из файла FINGERPRINT.txt (если есть).
+    🩺 Health-check с «отпечатками», чтобы легко убедиться,
+    что деплой смотрит на нужный репо/ветку.
     """
     return {
         "ok": True,
         "fingerprint": SERVICE_FINGERPRINT,
         "repo": REPO_FINGERPRINT,
+    }
+
+
+@app.get("/debug/webhook-info")
+async def debug_webhook_info():
+    """🔎 Удобный дебаг: вернуть текущие настройки вебхука из Telegram."""
+    if not application:
+        return {"ok": False, "error": "bot not initialized"}
+    info = await application.bot.get_webhook_info()
+    # Возвращаем ключевые поля без лишнего шума
+    return {
+        "ok": True,
+        "url": info.url,
+        "has_custom_certificate": info.has_custom_certificate,
+        "pending_update_count": info.pending_update_count,
+        "ip_address": getattr(info, "ip_address", None),
+        "last_error_date": getattr(info, "last_error_date", None),
+        "last_error_message": getattr(info, "last_error_message", None),
     }
 
 
@@ -120,13 +144,12 @@ async def webhook(secret: str, request: Request):
     • сверяем секрет,
     • превращаем JSON → Update,
     • отправляем в PTB,
-    • отдаём быстрый 200 OK (ВАЖНО — иначе Telegram будет ретраить).
+    • отдаём быстрый 200 OK (иначе Telegram будет ретраить).
     """
     if secret != WEBHOOK_SECRET:
         return {"ok": False}
 
     if not application:
-        # Если вдруг не успели инициализироваться
         return {"ok": False, "error": "bot not initialized"}
 
     data = await request.json()
