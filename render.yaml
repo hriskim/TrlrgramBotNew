@@ -1,14 +1,15 @@
+# 🧭 render.yaml — конфиг деплоя на Render.com
+# Подходит для плана free (служба «засыпает» — это нормально, Telegram ретраит).
+
 services:
   - type: web
-    name: tg-bot-webhook
+    name: your-tg-bot            # ✏️ любое имя
     runtime: python
-    plan: free
-    buildCommand: pip install -r requirements.txt && pip install gunicorn
-    startCommand: gunicorn --bind 0.0.0.0:$PORT app:app
+    plan: free                   # 💸 бесплатный план
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
     envVars:
-      - key: BOT_TOKEN
+      - key: BOT_TOKEN           # 🔐 токен из @BotFather (задаём в UI Render)
         sync: false
-      - key: WEBHOOK_SECRET
-        sync: false
-      - key: SETUP_TOKEN
+      - key: WEBHOOK_SECRET      # 🧩 любой секрет для пути вебхука, напр. mysecret123
         sync: false
